@@ -1,0 +1,18 @@
+version: '3.8'
+
+# Exemple générique pour documentation
+services:
+  api:
+    image: monx/trash-collection-api:latest
+    container_name: fr-trash-collection-api
+    ports:
+      - "9000:8000"
+    volumes:
+      - collecte_db:/app/data
+      - ${HOST_PDFS_DIR:-./data/pdfs}:/app/data/pdfs:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+volumes:
+  collecte_db:
