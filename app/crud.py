@@ -106,3 +106,20 @@ def delete_all_collections(db: Session):
     """Supprimer toutes les collectes (utilisé par le parser pour réinitialiser)"""
     db.query(models.Collection).delete()
     db.commit()
+
+
+def get_metadata(db: Session, key: str) -> str | None:
+    """Récupérer une valeur metadata par clé"""
+    row = db.query(models.Metadata).filter(models.Metadata.key == key).first()
+    return row.value if row else None
+
+
+def set_metadata(db: Session, key: str, value: str) -> None:
+    """Créer ou mettre à jour une clé metadata"""
+    row = db.query(models.Metadata).filter(models.Metadata.key == key).first()
+    if row:
+        row.value = value
+    else:
+        row = models.Metadata(key=key, value=value)
+        db.add(row)
+    db.commit()

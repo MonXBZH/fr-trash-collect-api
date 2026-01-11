@@ -16,24 +16,15 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from app.database import SessionLocal, engine
 from app import models, schemas, crud
+import re
+import pdfplumber
+import holidays
 
 app = typer.Typer()
 
 
-JOURS_FERIES_2025_2026 = [
-    date(2025, 1, 1),   # Jour de l'an
-    date(2025, 4, 21),  # Lundi de Pâques
-    date(2025, 5, 1),   # Fête du travail
-    date(2025, 5, 8),   # Victoire 1945
-    date(2025, 5, 29),  # Ascension
-    date(2025, 6, 9),   # Lundi de Pentecôte
-    date(2025, 7, 14),  # Fête nationale
-    date(2025, 8, 15),  # Assomption
-    date(2025, 11, 1),  # Toussaint
-    date(2025, 11, 11), # Armistice 1918
-    date(2025, 12, 25), # Noël
-    date(2026, 1, 1),   # Jour de l'an
-]
+# Dynamic holiday set (populated based on detected period or start/end)
+HOLIDAY_SET: set[date] = set()
 
 
 def get_week_number(d: date) -> int:
@@ -61,8 +52,12 @@ def get_next_day(d: date, target_weekday: int) -> date:
 
 
 def is_holiday_or_weekend(d: date) -> bool:
-    """Vérifie si une date est un jour férié ou un weekend"""
-    return d in JOURS_FERIES_2025_2026 or d.weekday() >= 5
+    """Vérifie si une date est un jour férié ou un weekend.
+
+    Utilise `HOLIDAY_SET` s'il est renseigné (préféré). Sinon, considère
+    uniquement le weekend comme jour non ouvrable.
+    """
+    return d.weekday() >= 5 or d in HOLIDAY_SET
 
 
 def apply_holiday_shift(collection_date: date) -> tuple[date, bool, str | None]:
@@ -128,6 +123,52 @@ def generate_collections(start_date: date, end_date: date, cities: list[str]) ->
     return collections
 
 
+def extract_calendar_period_from_pdf(pdf_path: str) -> str | None:
+    """Extract a calendar period from the PDF.
+
+    Attempts to find explicit ranges like "2025/2026", "2025-2026", "2025–2026",
+    or infers the period from the set of years present in the text. Returns a
+    string like "2025/2026" when possible, else returns a single year string
+    like "2025" or None if nothing found.
+    """
+    try:
+        years_found: dict[int, int] = {}
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                # First try to find explicit ranges like 2025/2026 or 2025-2026
+                m_range = re.search(r"\b(20[0-9]{2})\s*[\/-–—]\s*(20[0-9]{2})\b", text)
+                if m_range:
+                    y1 = int(m_range.group(1))
+                    y2 = int(m_range.group(2))
+                    # normalize order
+                    if y1 <= y2:
+                        return f"{y1}/{y2}"
+                    else:
+                        return f"{y2}/{y1}"
+
+                for m in re.findall(r"\b(20[0-9]{2})\b", text):
+                    y = int(m)
+                    years_found[y] = years_found.get(y, 0) + 1
+
+        if not years_found:
+            return None
+
+        distinct_years = sorted(years_found.keys())
+        # If two consecutive years present, return range
+        if len(distinct_years) >= 2:
+            # look for pair that are consecutive and have occurrences
+            for i in range(len(distinct_years) - 1):
+                a = distinct_years[i]
+                b = distinct_years[i + 1]
+                if b == a + 1:
+                    return f"{a}/{b}"
+        # Fallback: return the most frequent year
+        return str(max(years_found.items(), key=lambda kv: kv[1])[0])
+    except Exception:
+        return None
+
+
 @app.command()
 def parse(
     pdf_path: str = typer.Option("data/calendar.pdf", "--pdf", "-p", help="Chemin vers le PDF calendrier"),
@@ -152,6 +193,62 @@ def parse(
     try:
         typer.echo("Suppression des anciennes données...")
         crud.delete_all_collections(db)
+
+        # Extract calendar period from PDF and store in metadata
+        period = extract_calendar_period_from_pdf(pdf_path)
+        if period:
+            typer.echo(f"Période détectée dans le PDF: {period}")
+            crud.set_metadata(db, "calendar_period", str(period))
+            # also set calendar_year for backward compatibility (first year)
+            first_year = period.split("/")[0]
+            crud.set_metadata(db, "calendar_year", first_year)
+        else:
+            typer.echo("Aucune période extraite du PDF (fallback possible)")
+
+        # If period was detected and the user didn't override start/end (used defaults),
+        # adjust start/end to match the detected period, e.g. 2025/2026 -> 2025-10-01 / 2026-09-30
+        try:
+            DEFAULT_START = "2024-10-01"
+            DEFAULT_END = "2026-09-30"
+            if period and start_date == DEFAULT_START and end_date == DEFAULT_END:
+                m = re.match(r"^(20[0-9]{2})(?:/(20[0-9]{2}))$", period)
+                if m:
+                    y1 = int(m.group(1))
+                    y2 = int(m.group(2))
+                    start = date(y1, 10, 1)
+                    end = date(y2, 9, 30)
+                    typer.echo(f"Ajustement automatique de la période: {start} à {end}")
+        except Exception:
+            # don't fail the whole parse on this
+            pass
+
+        # Build HOLIDAY_SET for the target years (prefer explicit period, else infer from start/end)
+        try:
+            years = set()
+            if period:
+                m = re.match(r"^(20[0-9]{2})(?:/(20[0-9]{2}))$", period)
+                if m:
+                    y1 = int(m.group(1))
+                    y2 = int(m.group(2))
+                    years.update(range(y1, y2 + 1))
+                else:
+                    years.add(int(period))
+            else:
+                # fallback: use years spanned by start/end
+                years.update(range(start.year, end.year + 1))
+
+            # populate global HOLIDAY_SET
+            global HOLIDAY_SET
+            HOLIDAY_SET = set()
+            try:
+                ch = holidays.CountryHoliday("FR", years=list(years))
+                for d in ch.keys():
+                    HOLIDAY_SET.add(d)
+                typer.echo(f"Jours fériés chargés pour les années: {sorted(years)}")
+            except Exception as e:
+                typer.echo(f"Impossible de charger les jours fériés via python-holidays: {e}")
+        except Exception:
+            pass
 
         typer.echo("Génération des collectes...")
         collections = generate_collections(start, end, cities_list)

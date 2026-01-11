@@ -27,7 +27,13 @@ RUN apt-get purge -y --auto-remove gcc g++ make \
 # Copier le code de l'application
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+
+# Copier les données (calendrier) si présentes
 COPY data/ ./data/
+
+# Copier l'entrypoint qui lancera le parser si nécessaire
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Créer le répertoire pour la base de données
 RUN mkdir -p /app/data
@@ -35,5 +41,6 @@ RUN mkdir -p /app/data
 # Exposer le port de l'API
 EXPOSE 8000
 
-# Commande pour démarrer l'application
+# Entrypoint: lance le parser si un PDF est présent, puis démarre le serveur
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
