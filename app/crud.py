@@ -94,7 +94,20 @@ def get_collections_stats(db: Session):
 
 
 def create_collection(db: Session, collection: schemas.CollectionCreate):
-    """Créer une nouvelle collecte (utilisé par le parser)"""
+    """Créer ou mettre à jour une collecte (upsert par date + type + ville)"""
+    existing = db.query(models.Collection).filter(
+        models.Collection.date == collection.date,
+        models.Collection.waste_type == collection.waste_type,
+        models.Collection.city == collection.city,
+    ).first()
+
+    if existing:
+        for key, value in collection.model_dump().items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     db_collection = models.Collection(**collection.model_dump())
     db.add(db_collection)
     db.commit()

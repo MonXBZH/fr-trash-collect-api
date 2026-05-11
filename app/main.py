@@ -5,6 +5,7 @@ from datetime import date
 
 from app import crud, models, schemas
 from app.database import engine, get_db, SessionLocal
+from app.admin import router as admin_router
 from fastapi.openapi.utils import get_openapi
 
 models.Base.metadata.create_all(bind=engine)
@@ -66,9 +67,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+app.include_router(admin_router)
 
 
 @app.get("/", tags=["Root"])
@@ -100,6 +103,7 @@ def read_root():
         "calendar_period": calendar_period,
         "calendar_year": calendar_year,
         "documentation": "/docs",
+        "admin_portal": "/admin/portal",
         "version": "1.0.0",
         "endpoints": {
             "collections": "/collections/",

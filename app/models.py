@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Date, Boolean, DateTime, UniqueConstraint
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -6,6 +6,9 @@ from app.database import Base
 class Collection(Base):
     """Modèle pour une collecte de déchets"""
     __tablename__ = "collections"
+    __table_args__ = (
+        UniqueConstraint("date", "waste_type", "city", name="uq_collection_date_type_city"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     date = Column(Date, nullable=False, index=True)

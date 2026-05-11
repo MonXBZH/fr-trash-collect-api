@@ -1,16 +1,19 @@
 services:
   api:
-    image: monx/trash-collection-api:latest
+    image: monx/trash-collection-api:dev
     container_name: trash-collection-api
     ports:
       - "8000:8000"
     volumes:
       # Persister la base de données
       - ./trash_collection.db:/app/trash_collection.db
-      # Monter le PDF calendrier
-      - ./data:/app/data
+      # Monter le dossier des PDFs calendriers
+      - ./data/pdfs:/app/data/pdfs
     environment:
       - PYTHONUNBUFFERED=1
+      # Optionnel : si absent, une clé admin est auto-générée au démarrage
+      # et affichée dans les logs (docker logs trash-collection-api | grep ADMIN_API_KEY)
+      # - ADMIN_API_KEY=votre_clé_secrète
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]

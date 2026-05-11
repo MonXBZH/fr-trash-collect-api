@@ -123,6 +123,42 @@ def generate_collections(start_date: date, end_date: date, cities: list[str]) ->
     return collections
 
 
+def extract_cities_from_pdf(pdf_path: str) -> list[str]:
+    """Extrait les noms de villes depuis les en-têtes du PDF.
+
+    Pour chaque page, lit les premières lignes courtes (≤ 50 caractères) qui
+    ressemblent à un nom de ville (pas un mot-clé calendrier connu). Retourne
+    la liste dédupliquée (ordre de première apparition).
+    """
+    SKIP_KEYWORDS = {
+        "vos collectes", "calendrier", "octobre", "novembre", "décembre",
+        "janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+        "août", "septembre", "rennes", "métropole", "pour les", "info",
+        "déchets", "saviez", "bacs", "maisons",
+    }
+
+    seen: dict[str, None] = {}  # ordered set via dict
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line or len(line) > 50:
+                        continue
+                    low = line.lower()
+                    if any(kw in low for kw in SKIP_KEYWORDS):
+                        continue
+                    # Must contain at least one letter and look like a proper noun
+                    if re.search(r"[A-Za-zÀ-ÿ]", line):
+                        seen[line] = None
+                        break  # one city name per page, take the first match
+    except Exception:
+        pass
+
+    return list(seen.keys())
+
+
 def extract_calendar_period_from_pdf(pdf_path: str) -> str | None:
     """Extract a calendar period from the PDF.
 
@@ -172,7 +208,7 @@ def extract_calendar_period_from_pdf(pdf_path: str) -> str | None:
 @app.command()
 def parse(
     pdf_path: str = typer.Option("data/calendar.pdf", "--pdf", "-p", help="Chemin vers le PDF calendrier"),
-    cities: str = typer.Option("Nouvoitou,Saint-Armel", "--cities", "-c", help="Villes séparées par des virgules"),
+    cities: str = typer.Option("", "--cities", "-c", help="Villes séparées par des virgules (auto-détectées si absent)"),
     start_date: str = typer.Option("2024-10-01", "--start", "-s", help="Date de début (YYYY-MM-DD)"),
     end_date: str = typer.Option("2026-09-30", "--end", "-e", help="Date de fin (YYYY-MM-DD)")
 ):
@@ -180,7 +216,18 @@ def parse(
 
     typer.echo(f"Parsing du calendrier: {pdf_path}")
 
-    cities_list = [c.strip() for c in cities.split(",")]
+    # Détection automatique des villes si non fournies
+    if cities.strip():
+        cities_list = [c.strip() for c in cities.split(",") if c.strip()]
+    else:
+        typer.echo("Détection automatique des villes depuis le PDF...")
+        cities_list = extract_cities_from_pdf(pdf_path)
+        if cities_list:
+            typer.echo(f"Villes détectées: {', '.join(cities_list)}")
+        else:
+            typer.echo("Aucune ville détectée dans le PDF, abandon.")
+            raise typer.Exit(code=1)
+
     start = date.fromisoformat(start_date)
     end = date.fromisoformat(end_date)
 
@@ -191,9 +238,6 @@ def parse(
 
     db = SessionLocal()
     try:
-        typer.echo("Suppression des anciennes données...")
-        crud.delete_all_collections(db)
-
         # Extract calendar period from PDF and store in metadata
         period = extract_calendar_period_from_pdf(pdf_path)
         if period:
